@@ -3,6 +3,10 @@ const { Telegram } = require('telegraf');
 const { FastMCP } = require('fastmcp');
 const admin = require('firebase-admin');
 
+// Import utility modules
+const { summarizeConversation } = require('./utils/conversationUtils');
+const { tools, getAvailableTools, findToolById } = require('./tools');
+
 // Initialize Firebase
 admin.initializeApp();
 const db = admin.firestore();
@@ -15,34 +19,6 @@ const mcp = new FastMCP({
   apiKey: process.env.MCP_API_KEY,
   baseUrl: process.env.MCP_BASE_URL || 'https://api.fastmcp.com'
 });
-
-// Tools available to the MCP client
-const tools = [
-  {
-    id: 'weather',
-    description: 'Get current weather information',
-    handler: async (params) => {
-      // Implementation for weather tool
-      return `Weather in ${params.location}: ${params.temp}°C, ${params.conditions}`;
-    }
-  },
-  {
-    id: 'search',
-    description: 'Search for information online',
-    handler: async (params) => {
-      // Implementation for search tool
-      return `Search results for "${params.query}": ${params.results}`;
-    }
-  },
-  {
-    id: 'reminder',
-    description: 'Set a reminder',
-    handler: async (params) => {
-      // Implementation for reminder tool
-      return `Reminder set for ${params.time}: ${params.message}`;
-    }
-  }
-];
 
 // Main function that handles Telegram webhook
 functions.http('telegramWebhook', async (req, res) => {
@@ -108,7 +84,7 @@ functions.http('telegramWebhook', async (req, res) => {
           preferences: userData.preferences || {}
         },
         conversationSummary,
-        availableTools: tools.map(tool => ({ id: tool.id, description: tool.description }))
+        availableTools: getAvailableTools()
       }
     });
 
@@ -116,10 +92,16 @@ functions.http('telegramWebhook', async (req, res) => {
     let responseText;
     if (mcpResponse.tool) {
       // Find the selected tool
-      const selectedTool = tools.find(tool => tool.id === mcpResponse.tool.id);
+      const selectedTool = findToolById(mcpResponse.tool.id);
       if (selectedTool) {
+        // Add userId to the parameters for tools that need it
+        const toolParams = {
+          ...mcpResponse.tool.params,
+          userId: userId
+        };
+        
         // Execute the tool with the provided parameters
-        const toolResult = await selectedTool.handler(mcpResponse.tool.params);
+        const toolResult = await selectedTool.handler(toolParams);
         responseText = `${mcpResponse.response}\n\n${toolResult}`;
       } else {
         responseText = mcpResponse.response;
@@ -151,61 +133,3 @@ functions.http('telegramWebhook', async (req, res) => {
     res.status(500).send('Internal Server Error');
   }
 });
-
-/**
- * Summarize conversation history to provide context
- * @param {Array} history - Conversation history
- * @return {string} - Summary of the conversation
- */
-function summarizeConversation(history) {
-  if (history.length === 0) return 'This is a new conversation.';
-  
-  // Extract key topics and intentions from the conversation
-  const userMessages = history.filter(msg => msg.role === 'user').map(msg => msg.content);
-  const botMessages = history.filter(msg => msg.role === 'assistant').map(msg => msg.content);
-  
-  // Simple approach: mention the number of exchanges and the most recent topics
-  let summary = `Conversation with ${history.length} messages. `;
-  
-  if (userMessages.length > 0) {
-    const lastUserMessage = userMessages[userMessages.length - 1];
-    summary += `User last asked about: "${lastUserMessage.substring(0, 50)}${lastUserMessage.length > 50 ? '...' : ''}". `;
-  }
-  
-  // Identify potential topics or intents
-  const topics = identifyTopics(userMessages);
-  if (topics.length > 0) {
-    summary += `Main topics: ${topics.join(', ')}. `;
-  }
-  
-  return summary;
-}
-
-/**
- * Simple topic identification from messages
- * @param {Array} messages - Array of message strings
- * @return {Array} - Array of identified topics
- */
-function identifyTopics(messages) {
-  // This is a very simplified approach
-  // In a real application, you might use NLP or ML for better topic extraction
-  const topicKeywords = {
-    'weather': ['weather', 'temperature', 'forecast', 'rain', 'sunny'],
-    'search': ['search', 'find', 'look up', 'information', 'about'],
-    'reminder': ['remind', 'reminder', 'schedule', 'later', 'forget']
-  };
-  
-  const identifiedTopics = new Set();
-  
-  messages.forEach(message => {
-    const lowercaseMsg = message.toLowerCase();
-    
-    Object.entries(topicKeywords).forEach(([topic, keywords]) => {
-      if (keywords.some(keyword => lowercaseMsg.includes(keyword))) {
-        identifiedTopics.add(topic);
-      }
-    });
-  });
-  
-  return Array.from(identifiedTopics);
-}
